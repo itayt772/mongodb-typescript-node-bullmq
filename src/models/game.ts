@@ -8,4 +8,5 @@ export default interface Game {
     id?: ObjectId;
     gameScanPeriod: number;
     authors: Author[];
+    dateCreated: Date;
 }

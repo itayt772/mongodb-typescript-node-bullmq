@@ -1,4 +1,4 @@
-import express, { Request, Response } from "express";
+import express, { json, Request, Response } from "express";
 import { ObjectId } from "mongodb";
 import { collections } from "../services/database.service";
 import { QueueScheduler, Worker } from "bullmq";
@@ -6,7 +6,7 @@ import { Queue } from "bullmq";
 import { QueueEvents } from "bullmq";
 import { env } from "process";
 import config from "../config";
-import ScanJob from "../models/scan-job";
+import ScanJob from "../models/scanJob";
 import Game from "../models/game";
 import Author from "../models/author";
 
@@ -16,45 +16,22 @@ gamesRouter.use(express.json());
 
 const MINUTE: number = 60000;
 const SIXSECONDS: number = 6000; // FOR TESTS
+const filteredJobs: Author[] = [];
 
-let delayForJobFromGame = 0;
 const myQueueScheduler = new QueueScheduler("foo");
 const myQueue = new Queue("foo");
 
-async function addJob(jobId: ObjectId, jobName: string, delayTime: number) {
-    await myQueue.add(jobName, { foo: "bar" }, { delay: delayTime * SIXSECONDS });
+async function addJob(jobId: string, jobName: string, delayTime: number) {
+    await myQueue.add(jobName, { jobId: jobId }, { delay: delayTime * SIXSECONDS });
 }
-
-async function addJobs() {
-    await myQueue.add("myJobName", { foo: "bar" }, { delay: MINUTE });
-    await myQueue.add("myJobName2", { qux: "baz" }, { delay: 5 });
-    // await myQueue.add(
-    //     "house",
-    //     { color: "white" },
-    //     {
-    //         repeat: {
-    //             every: 10000,
-    //             limit: 10,
-    //         },
-    //     },
-    // );
-}
-
-//addJobs();
 
 const worker = new Worker("foo", async (job) => {
-    // Will print { foo: 'bar'} for the first job
-    // and { qux: 'baz' } for the second.
     console.log(job.data);
 });
 
 gamesRouter.get("/", async (_req: Request, res: Response) => {
     try {
         const games = await collections.games.find({}).toArray();
-        // search in games in authors array if is there jobs to do
-        // by seeing id scanjob val > 0
-        //const gamesFindJobs = await collections.games.find({ "authors.scanJob": { $gte: 1 } }).toArray();
-        const filteredJobs: Author[] = [];
 
         games.forEach(function (game) {
             for (let i = 0; i < game.authors.length; i++) {
@@ -62,67 +39,48 @@ gamesRouter.get("/", async (_req: Request, res: Response) => {
                     filteredJobs.push(game.authors[i]); // push job into jobs array
                 }
             }
-            // let author = game.authors.find((x) => x.scanJob > 0);
-            // filteredJobs.push(author);
         });
-        console.log(filteredJobs);
 
+        let tempJobIdForQuery: string = "";
         filteredJobs.forEach(function (scanJob) {
-            addJob(scanJob.id, `jobFromInside with id:${scanJob.id} name:${scanJob.fullName}`, scanJob.scanJob);
+            tempJobIdForQuery = scanJob.id.valueOf().toString();
+            addJob(tempJobIdForQuery, `jobFromInside with id:${scanJob.id} name:${scanJob.fullName}`, scanJob.scanJob);
         });
 
         worker.on("completed", (job) => {
-            let scanId = job.id;
-            console.log(`${job.id} ${job.name} has completed!`);
-            //let state = await job.getState();
-            // collections.games.findOneAndUpdate(
-            //     { _id: "61c1dd0636c24fa1d95f046b", "authors.id": "61c1dd4e5198f9a65df8ff17" },
-            //     { $inc: { "authors.$.scanJob": 5 } },
-            // );
+            let scanJobId: string = job.data.jobId;
+            console.log(`${job.name} has completed!`);
 
             collections.games
                 .updateOne(
                     {},
                     { $set: { "authors.$[elem].status": "completed" } },
-                    { arrayFilters: [{ "elem.age": { $gte: 35 } }] },
+                    { arrayFilters: [{ "elem.id": { $eq: new ObjectId(scanJobId) } }] },
                 )
                 .then((obj) => {
-                    console.log("Updated - " + obj);
+                    console.log("Updated - " + scanJobId);
                 })
                 .catch((err) => {
                     console.log("Error: " + err);
                 });
-
-            // collections.games
-            //     .updateOne({ authors: { "authors.id": scanId } }, { $set: { "authors.$.status": "complete" } })
-            //     .then((obj) => {
-            //         console.log("Updated - " + obj);
-            //     })
-            //     .catch((err) => {
-            //         console.log("Error: " + err);
-            //     });
-
-            //collections.games.
-
-            // collections.games
-            //     .updateOne(
-            //         { _id: new ObjectId("61c1dd0636c24fa1d95f046b") }, // Filter
-            //         { $set: { name: "Vladio" } }, // Update
-            //         //{upsert: true} // add document with req.body._id if not exists
-            //     )
-            //     .then((obj) => {
-            //         console.log("Updated - " + obj);
-            //     })
-            //     .catch((err) => {
-            //         console.log("Error: " + err);
-            //     });
         });
 
         worker.on("failed", (job, err) => {
+            let scanJobId: string = job.data.jobId;
+            collections.games
+                .updateOne(
+                    {},
+                    { $set: { "authors.$[elem].status": "failed" } },
+                    { arrayFilters: [{ "elem.id": { $eq: new ObjectId(scanJobId) } }] },
+                )
+                .then((obj) => {
+                    console.log("Failed - " + scanJobId);
+                })
+                .catch((err) => {
+                    console.log("Error: " + err);
+                });
             console.log(`${job.id} has failed with ${err.message}`);
         });
-
-        // update status for job
 
         res.status(200).send(games); //gamesFindJobs
     } catch (error) {
@@ -150,6 +108,7 @@ gamesRouter.get("/:id", async (req: Request, res: Response) => {
 gamesRouter.post("/", async (req: Request, res: Response) => {
     try {
         const newGame = req.body;
+        newGame.dateCreated = new Date();
         const result = await collections.games.insertOne(newGame);
 
         result
@@ -193,17 +152,17 @@ gamesRouter.put("/:id/addScanJob", async (req: Request, res: Response) => {
             $push: {
                 authors: {
                     id: new ObjectId(),
-                    fullName: "The new author3",
-                    age: 32,
-                    scanJob: 1,
+                    fullName: req.body.fullName,
+                    age: req.body.age,
+                    scanJob: req.body.scanJob,
                     status: "pending",
                 },
             },
         });
 
         result
-            ? res.status(200).send(`Successfully updated game with id ${id}`)
-            : res.status(304).send(`Game with id: ${id} not updated`);
+            ? res.status(200).send(`Successfully updated asset with id ${id}`)
+            : res.status(304).send(`Asset with id: ${id} not updated`);
     } catch (error) {
         console.error(error.message);
         res.status(400).send(error.message);
@@ -218,11 +177,11 @@ gamesRouter.delete("/:id", async (req: Request, res: Response) => {
         const result = await collections.games.deleteOne(query);
 
         if (result && result.deletedCount) {
-            res.status(202).send(`Successfully removed game with id ${id}`);
+            res.status(202).send(`Successfully removed asset with id ${id}`);
         } else if (!result) {
-            res.status(400).send(`Failed to remove game with id ${id}`);
+            res.status(400).send(`Failed to remove asset with id ${id}`);
         } else if (!result.deletedCount) {
-            res.status(404).send(`Game with id ${id} does not exist`);
+            res.status(404).send(`Asset with id ${id} does not exist`);
         }
     } catch (error) {
         console.error(error.message);
