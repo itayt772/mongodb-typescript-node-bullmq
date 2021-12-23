@@ -6,11 +6,12 @@ import { Queue } from "bullmq";
 import { QueueEvents } from "bullmq";
 import ScanJob from "../models/scanJob";
 import { Asset } from "../models/asset";
+import * as dotenv from "dotenv";
 
 export const assetsRouter = express.Router();
 
 assetsRouter.use(express.json());
-
+dotenv.config();
 const MINUTE: number = 60000;
 const SIXSECONDS: number = 6000; // FOR TESTS
 const filteredJobs: ScanJob[] = [];
@@ -25,10 +26,12 @@ async function addJob(jobId: string, jobName: string, delayTime: number) {
 const worker = new Worker("foo", async (job) => {
     // console.log(job.data);
 });
+const key = process.env.AWS_ACCESS_KEY_ID;
+const secret = process.env.AWS_SECRET_ACCESS_KEY;
 
 assetsRouter.get("/:sort?", async (_req: Request, res: Response) => {
     const sort = _req?.params?.sort;
-    console.log("sort value: " + sort);
+    //console.log("sort value: " + sort);
     let assets: Asset[] = [];
     if (sort) {
         assets = await collections.assets.find({}).sort({ name: 1 }).toArray();
@@ -36,11 +39,12 @@ assetsRouter.get("/:sort?", async (_req: Request, res: Response) => {
         assets = await collections.assets.find({}).toArray();
     }
     try {
-        //db.restaurants.find().sort( { "borough": 1 } )
         assets.forEach(function (asset) {
-            for (let i = 0; i < asset.scanJobs.length; i++) {
-                if (asset.scanJobs[i].scanDueDate > 0) {
-                    filteredJobs.push(asset.scanJobs[i]); // push job into jobs array
+            if (asset.scanJobs) {
+                for (let i = 0; i < asset.scanJobs.length; i++) {
+                    if (asset.scanJobs[i].scanDueDate > 0) {
+                        filteredJobs.push(asset.scanJobs[i]); // push job into jobs array
+                    }
                 }
             }
         });
@@ -54,6 +58,13 @@ assetsRouter.get("/:sort?", async (_req: Request, res: Response) => {
                 scanJob.scanDueDate,
             );
         });
+
+        let paramsSns: any = {
+            Message: "scan_job_message",
+            Subject: "scan_job_status",
+            //TargetArn: "arn:aws:sqs:us-east-2:914740489788:Jobs-Done",
+            TopicArn: "New-Scan-Job",
+        };
 
         worker.on("completed", (job) => {
             let scanJobId: string = job.data.jobId;
