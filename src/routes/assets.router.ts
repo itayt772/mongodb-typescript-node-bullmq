@@ -4,39 +4,43 @@ import { collections } from "../services/database.service";
 import { QueueScheduler, Worker } from "bullmq";
 import { Queue } from "bullmq";
 import { QueueEvents } from "bullmq";
-import { env } from "process";
-import config from "../config";
 import ScanJob from "../models/scanJob";
-import Game from "../models/game";
-import Author from "../models/author";
+import { Asset } from "../models/asset";
 
-export const gamesRouter = express.Router();
+export const assetsRouter = express.Router();
 
-gamesRouter.use(express.json());
+assetsRouter.use(express.json());
 
 const MINUTE: number = 60000;
 const SIXSECONDS: number = 6000; // FOR TESTS
-const filteredJobs: Author[] = [];
+const filteredJobs: ScanJob[] = [];
 
 const myQueueScheduler = new QueueScheduler("foo");
 const myQueue = new Queue("foo");
 
 async function addJob(jobId: string, jobName: string, delayTime: number) {
-    await myQueue.add(jobName, { jobId: jobId }, { delay: delayTime * SIXSECONDS });
+    await myQueue.add(jobName, { jobId: jobId }, { delay: delayTime * MINUTE });
 }
 
 const worker = new Worker("foo", async (job) => {
-    console.log(job.data);
+    // console.log(job.data);
 });
 
-gamesRouter.get("/", async (_req: Request, res: Response) => {
+assetsRouter.get("/:sort?", async (_req: Request, res: Response) => {
+    const sort = _req?.params?.sort;
+    console.log("sort value: " + sort);
+    let assets: Asset[] = [];
+    if (sort) {
+        assets = await collections.assets.find({}).sort({ name: 1 }).toArray();
+    } else {
+        assets = await collections.assets.find({}).toArray();
+    }
     try {
-        const games = await collections.games.find({}).toArray();
-
-        games.forEach(function (game) {
-            for (let i = 0; i < game.authors.length; i++) {
-                if (game.authors[i].scanJob > 0) {
-                    filteredJobs.push(game.authors[i]); // push job into jobs array
+        //db.restaurants.find().sort( { "borough": 1 } )
+        assets.forEach(function (asset) {
+            for (let i = 0; i < asset.scanJobs.length; i++) {
+                if (asset.scanJobs[i].scanDueDate > 0) {
+                    filteredJobs.push(asset.scanJobs[i]); // push job into jobs array
                 }
             }
         });
@@ -44,17 +48,21 @@ gamesRouter.get("/", async (_req: Request, res: Response) => {
         let tempJobIdForQuery: string = "";
         filteredJobs.forEach(function (scanJob) {
             tempJobIdForQuery = scanJob.id.valueOf().toString();
-            addJob(tempJobIdForQuery, `jobFromInside with id:${scanJob.id} name:${scanJob.fullName}`, scanJob.scanJob);
+            addJob(
+                tempJobIdForQuery,
+                `job with id:${scanJob.id} dateCreated:${scanJob.dateCreated}`,
+                scanJob.scanDueDate,
+            );
         });
 
         worker.on("completed", (job) => {
             let scanJobId: string = job.data.jobId;
             console.log(`${job.name} has completed!`);
 
-            collections.games
+            collections.assets
                 .updateOne(
                     {},
-                    { $set: { "authors.$[elem].status": "completed" } },
+                    { $set: { "scanJobs.$[elem].status": "completed", "scanJobs.$[elem].dateCompleted": new Date() } },
                     { arrayFilters: [{ "elem.id": { $eq: new ObjectId(scanJobId) } }] },
                 )
                 .then((obj) => {
@@ -67,10 +75,10 @@ gamesRouter.get("/", async (_req: Request, res: Response) => {
 
         worker.on("failed", (job, err) => {
             let scanJobId: string = job.data.jobId;
-            collections.games
+            collections.assets
                 .updateOne(
                     {},
-                    { $set: { "authors.$[elem].status": "failed" } },
+                    { $set: { "scanJobs.$[elem].status": "failed" } },
                     { arrayFilters: [{ "elem.id": { $eq: new ObjectId(scanJobId) } }] },
                 )
                 .then((obj) => {
@@ -82,83 +90,51 @@ gamesRouter.get("/", async (_req: Request, res: Response) => {
             console.log(`${job.id} has failed with ${err.message}`);
         });
 
-        res.status(200).send(games); //gamesFindJobs
+        res.status(200).send(assets);
     } catch (error) {
         res.status(500).send(error.message);
     }
 });
 
-// Example route: http://localhost:8080/games/610aaf458025d42e7ca9fcd0
-gamesRouter.get("/:id", async (req: Request, res: Response) => {
+// Example route: http://localhost:8080/assets/610aaf458025d42e7ca9fcd0
+assetsRouter.get("/:id", async (req: Request, res: Response) => {
     const id = req?.params?.id;
 
     try {
-        // _id in MongoDB is an objectID type so we need to find our specific document by querying
         const query = { _id: new ObjectId(id) };
-        const game = (await collections.games.findOne(query)) as Game;
+        const asset = (await collections.assets.findOne(query)) as Asset;
 
-        if (game) {
-            res.status(200).send(game);
+        if (asset) {
+            res.status(200).send(asset);
         }
     } catch (error) {
         res.status(404).send(`Unable to find matching document with id: ${req.params.id}`);
     }
 });
 
-gamesRouter.post("/", async (req: Request, res: Response) => {
+assetsRouter.post("/", async (req: Request, res: Response) => {
     try {
-        const newGame = req.body;
-        newGame.dateCreated = new Date();
-        const result = await collections.games.insertOne(newGame);
+        const newAsset = req.body;
+        newAsset.dateCreated = new Date();
+        const result = await collections.assets.insertOne(newAsset);
 
         result
-            ? res.status(201).send(`Successfully created a new game with id ${result.insertedId}`)
-            : res.status(500).send("Failed to create a new game.");
+            ? res.status(201).send(`Successfully created a new asset with id ${result.insertedId}`)
+            : res.status(500).send("Failed to create a new asset.");
     } catch (error) {
         console.error(error);
         res.status(400).send(error.message);
     }
 });
 
-gamesRouter.put("/:id", async (req: Request, res: Response) => {
+assetsRouter.put("/:id", async (req: Request, res: Response) => {
     const id = req?.params?.id;
 
     try {
-        const updatedGame = req.body;
+        const updatedAsset = req.body;
         const query = { _id: new ObjectId(id) };
         // $set adds or updates all fields
-        const result = await collections.games.updateOne(query, { $set: updatedGame });
-
-        result
-            ? res.status(200).send(`Successfully updated game with id ${id}`)
-            : res.status(304).send(`Game with id: ${id} not updated`);
-    } catch (error) {
-        console.error(error.message);
-        res.status(400).send(error.message);
-    }
-});
-
-// add scanjob
-// Example route: http://localhost:8080/games/610aaf458025d42e7ca9fcd0/addScanJob
-gamesRouter.put("/:id/addScanJob", async (req: Request, res: Response) => {
-    const id = req?.params?.id;
-
-    try {
-        const updatedGame = req.body; // put here new scanJob
-        const query = { _id: new ObjectId(id) };
-        // db.students.updateOne({ _id: 1 }, { $push: { scores: 89 } });
-        // $set adds or updates all fields
-        const result = await collections.games.updateOne(query, {
-            $push: {
-                authors: {
-                    id: new ObjectId(),
-                    fullName: req.body.fullName,
-                    age: req.body.age,
-                    scanJob: req.body.scanJob,
-                    status: "pending",
-                },
-            },
-        });
+        const result = await collections.assets.updateOne(query, { $set: updatedAsset });
 
         result
             ? res.status(200).send(`Successfully updated asset with id ${id}`)
@@ -169,12 +145,41 @@ gamesRouter.put("/:id/addScanJob", async (req: Request, res: Response) => {
     }
 });
 
-gamesRouter.delete("/:id", async (req: Request, res: Response) => {
+// add scanjob
+// Example route: http://localhost:8080/assets/610aaf458025d42e7ca9fcd0/addScanJob
+assetsRouter.put("/:id/addScanJob", async (req: Request, res: Response) => {
+    const id = req?.params?.id;
+
+    try {
+        const updatedAsset = req.body;
+        const query = { _id: new ObjectId(id) };
+        const result = await collections.assets.updateOne(query, {
+            $push: {
+                scanJobs: {
+                    id: new ObjectId(),
+                    dateCreated: new Date(),
+                    scanDueDate: req.body.scanDueDate,
+                    dateCompleted: null,
+                    status: "pending",
+                },
+            },
+        });
+
+        result
+            ? res.status(200).send(`Successfully added scan job with id ${id} to queue`)
+            : res.status(304).send(`scan job not updated`);
+    } catch (error) {
+        console.error(error.message);
+        res.status(400).send(error.message);
+    }
+});
+
+assetsRouter.delete("/:id", async (req: Request, res: Response) => {
     const id = req?.params?.id;
 
     try {
         const query = { _id: new ObjectId(id) };
-        const result = await collections.games.deleteOne(query);
+        const result = await collections.assets.deleteOne(query);
 
         if (result && result.deletedCount) {
             res.status(202).send(`Successfully removed asset with id ${id}`);

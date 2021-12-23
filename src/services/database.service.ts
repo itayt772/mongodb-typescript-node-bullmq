@@ -1,11 +1,9 @@
 import * as mongoDB from "mongodb";
 import * as dotenv from "dotenv";
-import Game from "../models/game";
 import ScanJob from "../models/scanJob";
 import { Asset } from "../models/asset";
 
 export const collections: {
-    games?: mongoDB.Collection<Game>;
     assets?: mongoDB.Collection<Asset>;
 } = {};
 
@@ -26,70 +24,15 @@ export async function connectToDatabase() {
     await applySchemaValidation(db);
 
     // Connect to the collection with the specific name from .env, found in the database previously specified
-    const gamesCollection = db.collection<Game>(process.env.GAMES_COLLECTION_NAME);
-    const assetsCollection = db.collection<Asset>(process.env.SCANJOB_COLLECTION_NAME);
+    const assetsCollection = db.collection<Asset>(process.env.ASSET_COLLECTION_NAME);
     // Persist the connection to the Games collection
-    collections.games = gamesCollection;
     collections.assets = assetsCollection;
-
-    console.log(
-        `Successfully connected to database: ${db.databaseName} and collection: ${gamesCollection.collectionName}`,
-    );
     console.log(
         `Successfully connected to database: ${db.databaseName} and collection: ${assetsCollection.collectionName}`,
     );
 }
 
-// Update our existing collection with JSON schema validation so we know our documents will always match the shape of our Game model, even if added elsewhere.
-// For more information about schema validation, see this blog series: https://www.mongodb.com/blog/post/json-schema-validation--locking-down-your-model-the-smart-way
 async function applySchemaValidation(db: mongoDB.Db) {
-    const jsonSchema2 = {
-        $jsonSchema: {
-            bsonType: "object",
-            required: ["name", "price", "category"],
-            additionalProperties: false,
-            properties: {
-                _id: {},
-                name: {
-                    bsonType: "string",
-                    description: "'name' is required and is a string",
-                },
-                price: {
-                    bsonType: "number",
-                    description: "'price' is required and is a number",
-                },
-                category: {
-                    bsonType: "string",
-                    description: "'category' is required and is a string",
-                },
-                gameScanPeriod: {
-                    bsonType: "number",
-                },
-                authors: {
-                    bsonType: "Array",
-                    required: ["fullName", "age"],
-                    properties: {
-                        id: {},
-                        fullName: {
-                            bsonType: "string",
-                        },
-                        age: {
-                            bsonType: "number",
-                        },
-                        scanJob: {
-                            bsonType: "number",
-                            default: 0,
-                        },
-                        status: {
-                            bsonType: "string",
-                        },
-                    },
-                },
-            },
-        },
-    };
-
-    // assets schema
     const jsonSchema = {
         $jsonSchema: {
             bsonType: "object",
@@ -140,17 +83,6 @@ async function applySchemaValidation(db: mongoDB.Db) {
     };
 
     // Try applying the modification to the collection, if the collection doesn't exist, create it
-    await db
-        .command({
-            collMod: process.env.GAMES_COLLECTION_NAME,
-            validator: jsonSchema2,
-        })
-
-        .catch(async (error: mongoDB.MongoServerError) => {
-            if (error.codeName === "NamespaceNotFound") {
-                await db.createCollection(process.env.GAMES_COLLECTION_NAME, { validator: jsonSchema });
-            }
-        });
 
     await db
         .command({
